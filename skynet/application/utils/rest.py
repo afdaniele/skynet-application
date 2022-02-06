@@ -8,8 +8,8 @@ from requests.adapters import HTTPAdapter
 
 class UnixSocketConnection(HTTPConnection):
 
-    def __init__(self, socket_fpath: str):
-        super().__init__()
+    def __init__(self, socket_fpath: str, host: str):
+        super(UnixSocketConnection, self).__init__(host)
         self._socket_fpath = socket_fpath
         self.sock = None
 
@@ -20,25 +20,28 @@ class UnixSocketConnection(HTTPConnection):
 
 class UnixSocketConnectionPool(HTTPConnectionPool):
 
-    def __init__(self, socket_fpath: str):
-        super().__init__(socket_fpath)
+    def __init__(self, socket_fpath: str, host: str):
+        super().__init__(host)
+        self._host = host
+        self._socket_fpath = socket_fpath
 
     def _new_conn(self):
-        return UnixSocketConnection(self.host)
+        return UnixSocketConnection(self._socket_fpath, self._host)
 
 
 class UnixSocketAdapter(HTTPAdapter):
 
-    def __init__(self, socket_fpath: str):
-        super().__init__()
+    def __init__(self, socket_fpath: str, host: str):
+        super(UnixSocketAdapter, self).__init__()
+        self._host = host
         self._socket_fpath = socket_fpath
 
     def get_connection(self, url, proxies=None):
-        return UnixSocketConnectionPool(self._socket_fpath)
+        return UnixSocketConnectionPool(self._socket_fpath, self._host)
 
 
 class UnixSocketHTTPEndpoint(Session):
 
     def __init__(self, socket_fpath: str, host: str, protocol: str = "http"):
         super(UnixSocketHTTPEndpoint, self).__init__()
-        self.mount(f"{protocol}://{host}/", UnixSocketAdapter(socket_fpath))
+        self.mount(f"{protocol}://{host}/", UnixSocketAdapter(socket_fpath, host))

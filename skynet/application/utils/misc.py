@@ -12,7 +12,7 @@ def make_id() -> str:
 def print_exc(e: BaseException, logger: Optional[logging.Logger] = None):
     error_msg = "\n".join(traceback.format_exception(type(e), e, e.__traceback__))
     if logger is not None:
-        logger.debug(error_msg)
+        logger.error(error_msg)
     else:
         print(error_msg)
 

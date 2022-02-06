@@ -29,7 +29,7 @@ class Node:
         # call node
         try:
             salogger.debug(f"POST: {url}")
-            response: Response = requests.post(
+            response: Response = cls.api.post(
                 url=f"http://node/{resource.lstrip('/')}",
                 json=data or {},
                 timeout=10,
