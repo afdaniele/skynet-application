@@ -18,6 +18,11 @@ def get_version(filename):
     return version
 
 
+def get_requirements(filename):
+    with open(filename) as f:
+        return f.readlines()
+
+
 if sys.version_info < (3, 8):
     msg = 'skynet works with Python 3.8 and later.\nDetected %s.' % str(sys.version)
     sys.exit(msg)
@@ -37,10 +42,7 @@ setup(
     zip_safe=False,
     include_package_data=True,
     keywords=['skynet'],
-    install_requires=[
-        'docker>=4.4.0',
-        'jsonschema',
-    ],
+    install_requires=get_requirements('requirements.txt'),
     classifiers=[
         'Development Status :: 3 - Alpha',
         'Intended Audience :: Developers',
