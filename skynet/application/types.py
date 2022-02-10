@@ -1,10 +1,16 @@
 import dataclasses
+import os
 from abc import abstractmethod, ABC
 from enum import Enum
-from threading import Semaphore
-from typing import TypeVar, Generic, Optional, Union, Any, List
+from threading import Thread
+from typing import TypeVar, Generic, Optional, Union, Any, List, Callable
 
-from skynet.application.utils.monitored_condition import MonitoredCondition
+import cbor2 as cbor2
+import zmq as zmq
+
+from skynet.application.constants import SKYNET_SOCKETS_DIR, ZMQ_CONTEXT
+from skynet.application.logging import salogger
+from skynet.application.utils.buffer import Buffer
 
 T = TypeVar("T")
 
@@ -30,37 +36,43 @@ class ServiceType(Enum):
 
 @dataclasses.dataclass
 class DataType(ISerializable):
-    name: str
+    type: type
     dimensions: List[int] = dataclasses.field(default_factory=list)
 
     def serialize(self, dynamic: bool = False) -> dict:
         return {
-            "name": self.name,
+            "name": self.type.__name__,
             "dimensions": self.dimensions,
         }
 
     @classmethod
-    def deserialize(cls, data: dict) -> 'DataType':
-        return DataType(
-            name=data["name"],
-            dimensions=data.get("dimensions", []),
-        )
+    def deserialize(cls, data: dict):
+        return None
 
     def __eq__(self, other):
         if not isinstance(other, DataType):
             return False
-        return self.name == other.name and self.dimensions == other.dimensions
+        return self.type is other.type and self.dimensions == other.dimensions
 
 
-class SkynetService(ISerializable, Generic[T]):
+class SkynetService(ISerializable, Generic[T], ABC):
+    QUEUE_SIZE: int = 1
 
-    def __init__(self, name: str, type: ServiceType, data: DataType, expose: bool = True):
+    def __init__(self, name: str, type: ServiceType, data: DataType, expose: bool = True,
+                 queue_size: Optional[int] = None):
         self._name = name
         self._type = type
         self._data = data
-        self._lock = Semaphore()
-        self._event = MonitoredCondition()
-        self._buffer = None
+        # buffer and worker thread
+        self._buffer: Buffer[T] = Buffer(queue_size or self.QUEUE_SIZE)
+        self._worker: Thread = Thread(target=self._work, daemon=True)
+        # connect to local unix socket
+        self._socket_path = os.path.join(SKYNET_SOCKETS_DIR, "services", f"{name}.sock")
+        self._url = f"ipc://{self._socket_path}"
+        self._socket = ZMQ_CONTEXT.socket(zmq.REQ)
+        # TODO: set high watermark
+        self._socket.connect(self._url)
+        salogger.info(f"Connected to socket '{self._url}'")
         # auto-expose
         if expose:
             from skynet.application import SkynetApplication
@@ -74,21 +86,9 @@ class SkynetService(ISerializable, Generic[T]):
     def data(self) -> DataType:
         return self._data
 
-    def __s_buffer_pop__(self) -> Optional[T]:
-        # empty buffer
-        with self._lock:
-            data = self._buffer
-            self._buffer = None
-        return data
-
-    def __s_buffer_put__(self, data: T):
-        # populate buffer
-        with self._lock:
-            # TODO: this is where we check whether we are dropping messages
-            self._buffer = data
-        # notify sender thread
-        with self._event:
-            self._event.notify()
+    @abstractmethod
+    def _work(self):
+        pass
 
     def serialize(self, dynamic: bool = False) -> dict:
         return {
@@ -110,23 +110,60 @@ class SkynetServicePub(SkynetService, Generic[T]):
 
     def __init__(self, name: str, data: DataType, **kwargs):
         super(SkynetServicePub, self).__init__(name, ServiceType.PUB, data, **kwargs)
+        self._worker.start()
 
-    def publish(self, data: T):
-        # put data into the buffer, the worker thread will be notified automatically
-        self.__s_buffer_put__(data)
+    @property
+    def value(self) -> None:
+        return None
+
+    @value.setter
+    def value(self, value: T):
+        # TODO: this is where we check whether we are dropping messages
+        self._buffer.push(value)
+
+    def _work(self):
+        while True:
+            # REQ(msg)  ->  SWITCHBOARD  ->  REP("")
+            data = self._buffer.pop()
+            raw = cbor2.dumps(data)
+            self._socket.send(raw, copy=False)
+            self._socket.recv(copy=False)
 
 
 class SkynetServiceSub(SkynetService, Generic[T]):
 
-    def __init__(self, name: str, data: DataType, **kwargs):
+    def __init__(self, name: str, data: DataType, callback: Optional[Callable[[T], None]] = None,
+                 **kwargs):
         super(SkynetServiceSub, self).__init__(name, ServiceType.SUB, data, **kwargs)
+        self._callback: Optional[Callable[[T], None]] = callback
+        self._busy: bool = False
+        self._worker.start()
 
-    def receive(self, timeout: Optional[float] = None) -> Optional[T]:
-        # we already have something?
-        data = self.__s_buffer_pop__()
-        if data is not None or timeout <= 0.0:
-            return data
-        # let's wait then
-        with self._event:
-            self._event.wait(timeout)
-            return self.__s_buffer_pop__()
+    @property
+    def value(self) -> T:
+        self._assert_no_callback()
+        return self._buffer.pop()
+
+    def __iter__(self):
+        self._assert_no_callback()
+        while True:
+            yield self._buffer.pop()
+
+    def _assert_no_callback(self):
+        if self._callback is not None:
+            raise ValueError("You cannot use an instance of SkynetServiceSub with both a callback "
+                             "function and .value/iterator.")
+
+    def _work(self):
+        while True:
+            # REQ("")  ->  SWITCHBOARD  ->  REP(msg)
+            self._socket.send(b"", copy=False)
+            raw = self._socket.recv(copy=False)
+            data = cbor2.loads(raw)
+            # callback
+            if self._callback is not None:
+                self._callback(data)
+            # buffer mode
+            else:
+                # TODO: this is where we check whether we are dropping messages
+                self._buffer.push(data)
