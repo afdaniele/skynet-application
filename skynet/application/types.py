@@ -4,7 +4,7 @@ import time
 from abc import abstractmethod, ABC
 from enum import Enum
 from threading import Thread
-from typing import TypeVar, Generic, Optional, Union, Any, List, Callable
+from typing import TypeVar, Generic, Optional, Union, Any, List, Callable, Iterator
 
 import cbor2 as cbor2
 import zmq as zmq
@@ -36,17 +36,17 @@ class ServiceType(Enum):
 
 
 @dataclasses.dataclass
-class InterServiceMessage(Generic[T]):
+class Message(Generic[T]):
     timestamp: float
-    payload: T
+    data: T
     version: str = "1.0"
 
     def serialize(self) -> bytes:
         return cbor2.dumps(dataclasses.asdict(self))
 
     @staticmethod
-    def deserialize(raw: bytes) -> 'InterServiceMessage':
-        return InterServiceMessage(**cbor2.loads(raw))
+    def deserialize(raw: bytes) -> 'Message':
+        return Message(**cbor2.loads(raw))
 
 
 @dataclasses.dataclass
@@ -79,7 +79,7 @@ class SkynetService(ISerializable, Generic[T], ABC):
         self._type = type
         self._data = data
         # buffer and worker thread
-        self._buffer: Buffer[InterServiceMessage[T]] = Buffer(queue_size or self.QUEUE_SIZE)
+        self._buffer: Buffer[Message[T]] = Buffer(queue_size or self.QUEUE_SIZE)
         self._worker: Thread = Thread(target=self._work, daemon=True)
         # connect to local unix socket
         self._socket_path = os.path.join(SKYNET_SOCKETS_DIR, "services", f"{name}.sock")
@@ -132,9 +132,13 @@ class SkynetServicePub(SkynetService, Generic[T]):
         return None
 
     @value.setter
-    def value(self, value: T):
+    def value(self, value: Union[T, Message]):
         # TODO: this is where we check whether we are dropping messages
-        msg = InterServiceMessage(timestamp=time.time(), payload=value)
+        if isinstance(value, Message):
+            msg = value
+        else:
+            msg = Message(timestamp=time.time(), data=value)
+        # ---
         self._buffer.push(msg)
 
     def _work(self):
@@ -155,18 +159,27 @@ class SkynetServiceSub(SkynetService, Generic[T]):
         self._busy: bool = False
         self._worker.start()
 
-    def _pop(self) -> InterServiceMessage:
+    def _pop(self) -> Message:
         return self._buffer.pop()
 
     @property
-    def value(self) -> T:
+    def message(self) -> Message:
         self._assert_no_callback()
-        return self._pop().payload
+        return self._pop()
 
-    def __iter__(self):
+    @property
+    def value(self) -> T:
+        return self.message.data
+
+    @property
+    def messages(self) -> Iterator[Message]:
         self._assert_no_callback()
         while True:
-            yield self._pop().payload
+            yield self._pop()
+
+    def __iter__(self) -> Iterator[T]:
+        for message in self.messages:
+            yield message.data
 
     def _assert_no_callback(self):
         if self._callback is not None:
@@ -178,10 +191,10 @@ class SkynetServiceSub(SkynetService, Generic[T]):
             # REQ("")  ->  SWITCHBOARD  ->  REP(msg)
             self._socket.send(b"", copy=False)
             raw = self._socket.recv(copy=False)
-            msg = InterServiceMessage.deserialize(raw)
+            msg = Message.deserialize(raw)
             # callback
             if self._callback is not None:
-                self._callback(msg.payload)
+                self._callback(msg.data)
             # buffer mode
             else:
                 # TODO: this is where we check whether we are dropping messages
