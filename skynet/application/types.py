@@ -78,6 +78,7 @@ class SkynetService(ISerializable, Generic[T], ABC):
         self._name = name
         self._type = type
         self._data = data
+        self._is_shutdown: bool = False
         # buffer and worker thread
         self._buffer: Buffer[Message[T]] = Buffer(queue_size or self.QUEUE_SIZE)
         self._worker: Thread = Thread(target=self._work, daemon=True)
@@ -101,9 +102,21 @@ class SkynetService(ISerializable, Generic[T], ABC):
     def data(self) -> DataType:
         return self._data
 
+    @property
+    def is_shutdown(self) -> bool:
+        return self._is_shutdown
+
     @abstractmethod
     def _work(self):
         pass
+
+    @abstractmethod
+    def _shutdown(self):
+        pass
+
+    def shutdown(self):
+        self._is_shutdown = True
+        self._shutdown()
 
     def serialize(self, dynamic: bool = False) -> dict:
         return {
@@ -142,12 +155,18 @@ class SkynetServicePub(SkynetService, Generic[T]):
         self._buffer.push(msg)
 
     def _work(self):
-        while True:
+        while not self.is_shutdown:
             # REQ(msg)  ->  SWITCHBOARD  ->  REP("")
             data = self._buffer.pop()
+            if self.is_shutdown:
+                return
             raw = data.serialize()
             self._socket.send(raw, copy=False)
             self._socket.recv(copy=False)
+
+    def _shutdown(self):
+        # push a fake message to the queue so that the worker thread wakes up
+        self._buffer.push(None)
 
 
 class SkynetServiceSub(SkynetService, Generic[T]):
@@ -187,7 +206,7 @@ class SkynetServiceSub(SkynetService, Generic[T]):
                              "function and .value/iterator.")
 
     def _work(self):
-        while True:
+        while not self.is_shutdown:
             # REQ("")  ->  SWITCHBOARD  ->  REP(msg)
             self._socket.send(b"", copy=False)
             raw = self._socket.recv(copy=False)
@@ -199,3 +218,6 @@ class SkynetServiceSub(SkynetService, Generic[T]):
             else:
                 # TODO: this is where we check whether we are dropping messages
                 self._buffer.push(msg)
+
+    def _shutdown(self):
+        pass
