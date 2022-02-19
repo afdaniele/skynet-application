@@ -1,9 +1,10 @@
 import dataclasses
 import os
+import time
 from abc import abstractmethod, ABC
 from enum import Enum
 from threading import Thread
-from typing import TypeVar, Generic, Optional, Union, Any, List, Callable
+from typing import TypeVar, Generic, Optional, Union, Any, List, Callable, Iterator
 
 import cbor2 as cbor2
 import zmq as zmq
@@ -25,6 +26,25 @@ class ISerializable(ABC):
     @abstractmethod
     def deserialize(cls, *args, **kwargs) -> Any:
         pass
+
+
+@dataclasses.dataclass
+class Message:
+    timestamp: float
+    data: bytes
+    version: str = "1.0"
+
+    def serialize(self) -> bytes:
+        return cbor2.dumps(dataclasses.asdict(self))
+
+    @classmethod
+    def deserialize(cls, raw: bytes) -> Optional['Message']:
+        try:
+            # noinspection PyArgumentList
+            return cls(**cbor2.loads(raw))
+        except (TypeError, ValueError) as e:
+            salogger.warning(f"Received error '{str(e)}' while decoding a message")
+            return None
 
 
 class ServiceType(Enum):
@@ -125,7 +145,7 @@ class SkynetServicePub(SkynetService, Generic[T]):
         while True:
             # REQ(msg)  ->  SWITCHBOARD  ->  REP("")
             data = self._buffer.pop()
-            raw = cbor2.dumps(data)
+            raw = (data if isinstance(data, Message) else Message(time.time(), data)).serialize()
             self._socket.send(raw, copy=False)
             self._socket.recv(copy=False)
 
@@ -140,14 +160,24 @@ class SkynetServiceSub(SkynetService, Generic[T]):
         self._worker.start()
 
     @property
-    def value(self) -> T:
+    def message(self) -> Message:
         self._assert_no_callback()
         return self._buffer.pop()
+
+    @property
+    def messages(self) -> Iterator[Message]:
+        self._assert_no_callback()
+        while True:
+            yield self._buffer.pop()
+
+    @property
+    def value(self) -> T:
+        return self.message.data
 
     def __iter__(self):
         self._assert_no_callback()
         while True:
-            yield self._buffer.pop()
+            yield self._buffer.pop().data
 
     def _assert_no_callback(self):
         if self._callback is not None:
@@ -159,10 +189,12 @@ class SkynetServiceSub(SkynetService, Generic[T]):
             # REQ("")  ->  SWITCHBOARD  ->  REP(msg)
             self._socket.send(b"", copy=False)
             raw = self._socket.recv(copy=False)
-            data = cbor2.loads(raw)
+            data = Message.deserialize(raw)
+            if data is None:
+                continue
             # callback
             if self._callback is not None:
-                self._callback(data)
+                self._callback(data.data)
             # buffer mode
             else:
                 # TODO: this is where we check whether we are dropping messages
