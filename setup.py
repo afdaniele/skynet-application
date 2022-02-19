@@ -1,6 +1,6 @@
 import sys
 
-from setuptools import setup
+from setuptools import setup, find_packages
 
 
 def get_version(filename):
@@ -26,9 +26,7 @@ lib_version = get_version(filename='skynet/application/__init__.py')
 
 setup(
     name='skynet-application',
-    packages=[
-        "skynet.application"
-    ],
+    packages=[f"skynet.{p}" for p in find_packages('./skynet')],
     version=lib_version,
     description='Skynet - Node',
     author='Andrea F. Daniele',
