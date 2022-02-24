@@ -3,7 +3,7 @@ import os
 import time
 from abc import abstractmethod, ABC
 from enum import Enum
-from threading import Thread
+from threading import Thread, Semaphore
 from typing import TypeVar, Generic, Optional, Union, Any, List, Callable, Iterator
 
 import cbor2 as cbor2
@@ -199,3 +199,37 @@ class SkynetServiceSub(SkynetService, Generic[T]):
             else:
                 # TODO: this is where we check whether we are dropping messages
                 self._buffer.push(data)
+
+
+class SkynetInteraction:
+    QUEUE_SIZE: int = 1
+
+    def __init__(self, callback: Optional[Callable[[bytes], None]] = None, queue_size: Optional[int] = None):
+        self._callback = callback
+        # buffer and worker thread
+        self._buffer: Buffer[T] = Buffer(queue_size or self.QUEUE_SIZE)
+        self._worker: Thread = Thread(target=self._work, daemon=True)
+        self._lock: Semaphore = Semaphore()
+        # connect to local unix socket
+        self._socket_path = os.path.join(SKYNET_SOCKETS_DIR, "interaction.sock")
+        self._url = f"ipc://{self._socket_path}"
+        self._socket = ZMQ_CONTEXT.socket(zmq.PAIR)
+        # TODO: set high watermark
+        self._socket.connect(self._url)
+        salogger.info(f"Connected to socket '{self._url}'")
+        self._worker.start()
+
+    def _work(self):
+        # PAIR(self)  <->  PAIR(ApplicationDeployment)
+        while True:
+            if not self._socket.poll(1000, zmq.POLLIN):
+                continue
+            # get data
+            data = self._socket.recv(flags=zmq.NOBLOCK)
+            if self._callback:
+                self._callback(data)
+
+    def send(self, data: Any):
+        raw: bytes = cbor2.dumps(data)
+        with self._lock:
+            self._socket.send(raw)
