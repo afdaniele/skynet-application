@@ -32,6 +32,7 @@ class ISerializable(ABC):
 class Message:
     timestamp: float
     data: bytes
+    length: Optional[int] = None
     version: str = "1.0"
 
     def serialize(self) -> bytes:
@@ -41,7 +42,9 @@ class Message:
     def deserialize(cls, raw: bytes) -> Optional['Message']:
         try:
             # noinspection PyArgumentList
-            return cls(**cbor2.loads(raw))
+            msg = cls(**cbor2.loads(raw))
+            msg.length = len(raw)
+            return msg
         except (TypeError, ValueError) as e:
             salogger.warning(f"Received error '{str(e)}' while decoding a message")
             return None
@@ -132,6 +135,8 @@ class SkynetServicePub(SkynetService, Generic[T]):
         super(SkynetServicePub, self).__init__(name, ServiceType.PUB, data, **kwargs)
         self._worker.start()
 
+    # TODO: allow setting the message (with timestamp) as we do in Sub
+
     @property
     def value(self) -> None:
         return None
@@ -204,7 +209,8 @@ class SkynetServiceSub(SkynetService, Generic[T]):
 class SkynetInteraction:
     QUEUE_SIZE: int = 1
 
-    def __init__(self, callback: Optional[Callable[[bytes], None]] = None, queue_size: Optional[int] = None):
+    def __init__(self, callback: Optional[Callable[[bytes], None]] = None,
+                 queue_size: Optional[int] = None):
         self._callback = callback
         # buffer and worker thread
         self._buffer: Buffer[T] = Buffer(queue_size or self.QUEUE_SIZE)
