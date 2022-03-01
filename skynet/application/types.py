@@ -135,7 +135,14 @@ class SkynetServicePub(SkynetService, Generic[T]):
         super(SkynetServicePub, self).__init__(name, ServiceType.PUB, data, **kwargs)
         self._worker.start()
 
-    # TODO: allow setting the message (with timestamp) as we do in Sub
+    @property
+    def message(self) -> None:
+        return None
+
+    @message.setter
+    def message(self, value: Message):
+        # TODO: this is where we check whether we are dropping messages
+        self._buffer.push(value)
 
     @property
     def value(self) -> None:
@@ -158,9 +165,10 @@ class SkynetServicePub(SkynetService, Generic[T]):
 class SkynetServiceSub(SkynetService, Generic[T]):
 
     def __init__(self, name: str, data: DataType, callback: Optional[Callable[[T], None]] = None,
-                 **kwargs):
+                 message_callback: bool = False, **kwargs):
         super(SkynetServiceSub, self).__init__(name, ServiceType.SUB, data, **kwargs)
         self._callback: Optional[Callable[[T], None]] = callback
+        self._message_callback: bool = message_callback
         self._busy: bool = False
         self._worker.start()
 
@@ -194,16 +202,16 @@ class SkynetServiceSub(SkynetService, Generic[T]):
             # REQ("")  ->  SWITCHBOARD  ->  REP(msg)
             self._socket.send(b"", copy=False)
             raw = self._socket.recv(copy=False)
-            data = Message.deserialize(raw)
-            if data is None:
+            msg = Message.deserialize(raw)
+            if msg is None:
                 continue
             # callback
             if self._callback is not None:
-                self._callback(data.data)
+                self._callback(msg if self._message_callback else msg.data)
             # buffer mode
             else:
                 # TODO: this is where we check whether we are dropping messages
-                self._buffer.push(data)
+                self._buffer.push(msg)
 
 
 class SkynetInteraction:
