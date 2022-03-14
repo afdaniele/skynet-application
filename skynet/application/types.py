@@ -31,7 +31,7 @@ class ISerializable(ABC):
 @dataclasses.dataclass
 class Message:
     timestamp: float
-    data: bytes
+    data: Any
     length: Optional[int] = None
     version: str = "1.0"
 
