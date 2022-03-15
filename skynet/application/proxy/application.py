@@ -2,7 +2,7 @@ import os
 import signal
 from collections import defaultdict
 from threading import Semaphore
-from typing import Dict, Callable, Set
+from typing import Dict, Callable, Set, Tuple
 
 from skynet.application.logging import salogger
 from skynet.application.proxy.node import Node
@@ -13,7 +13,7 @@ CallbackPriority = int
 
 
 class SkynetApplication:
-    services: Dict[str, SkynetService] = {}
+    services: Dict[Tuple[str, str], SkynetService] = {}
 
     # events
     events_callbacks: Dict[EventName, Dict[CallbackPriority, Set[Callable]]] = defaultdict(
@@ -26,10 +26,10 @@ class SkynetApplication:
 
     @classmethod
     def expose(cls, service: SkynetService):
-        if service.name in cls.services:
-            raise ValueError(f"Service '{service.name}' is already exposed. You can't expose "
-                             f"the same service twice.")
-        cls.services[service.name] = service
+        if (service.type.value, service.name) in cls.services:
+            raise ValueError(f"Service '{service.name}' of type '{service.type}' is already "
+                             f"exposed. You can't expose the same service twice.")
+        cls.services[(service.type.value, service.name)] = service
         # notify the node
         Node.call("service/expose", service.serialize())
 

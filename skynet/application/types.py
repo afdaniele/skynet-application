@@ -90,7 +90,8 @@ class SkynetService(ISerializable, Generic[T], ABC):
         self._buffer: Buffer[T] = Buffer(queue_size or self.QUEUE_SIZE)
         self._worker: Thread = Thread(target=self._work, daemon=True)
         # connect to local unix socket
-        self._socket_path = os.path.join(SKYNET_SOCKETS_DIR, "services", f"{name}.sock")
+        self._socket_path = os.path.join(SKYNET_SOCKETS_DIR, "services", type.value,
+                                         f"{name}.sock")
         self._url = f"ipc://{self._socket_path}"
         self._socket = ZMQ_CONTEXT.socket(zmq.REQ)
         # TODO: set high watermark
@@ -104,6 +105,10 @@ class SkynetService(ISerializable, Generic[T], ABC):
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def type(self) -> ServiceType:
+        return self._type
 
     @property
     def data(self) -> DataType:
@@ -169,7 +174,6 @@ class SkynetServiceSub(SkynetService, Generic[T]):
         super(SkynetServiceSub, self).__init__(name, ServiceType.SUB, data, **kwargs)
         self._callback: Optional[Callable[[T], None]] = callback
         self._message_callback: bool = message_callback
-        self._busy: bool = False
         self._worker.start()
 
     @property
@@ -186,6 +190,12 @@ class SkynetServiceSub(SkynetService, Generic[T]):
     @property
     def value(self) -> T:
         return self.message.data
+
+    def register_callback(self, callback: Callable[[T], None],
+                          message_callback: Optional[bool] = None):
+        self._callback = callback
+        if message_callback is not None:
+            self._message_callback = message_callback
 
     def __iter__(self):
         self._assert_no_callback()
