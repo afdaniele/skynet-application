@@ -43,7 +43,7 @@ class SimpleServicesSynchronizer:
                     msgs = tuple(self._partial)
                     self._buffer.push(msgs)
                 # clear internal state
-                self._partial.clear()
+                self._partial = [None] * len(self._services)
                 self._counter = 0
 
     @property
