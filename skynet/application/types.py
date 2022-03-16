@@ -4,7 +4,7 @@ import time
 from abc import abstractmethod, ABC
 from enum import Enum
 from threading import Thread, Semaphore
-from typing import TypeVar, Generic, Optional, Union, Any, List, Callable, Iterator
+from typing import TypeVar, Generic, Optional, Union, Any, Callable, Iterator, Tuple
 
 import cbor2 as cbor2
 import zmq as zmq
@@ -60,12 +60,12 @@ class ServiceType(Enum):
 @dataclasses.dataclass
 class DataType(ISerializable):
     type: type
-    dimensions: List[int] = dataclasses.field(default_factory=list)
+    shape: Tuple[int, ...] = dataclasses.field(default_factory=tuple)
 
     def serialize(self, dynamic: bool = False) -> dict:
         return {
             "name": self.type.__name__,
-            "dimensions": self.dimensions,
+            "shape": self.shape,
         }
 
     @classmethod
@@ -75,7 +75,7 @@ class DataType(ISerializable):
     def __eq__(self, other):
         if not isinstance(other, DataType):
             return False
-        return self.type is other.type and self.dimensions == other.dimensions
+        return self.type is other.type and self.shape == other.shape
 
 
 class SkynetService(ISerializable, Generic[T], ABC):
