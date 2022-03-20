@@ -12,8 +12,10 @@ import zmq as zmq
 from skynet.application.constants import SKYNET_SOCKETS_DIR, ZMQ_CONTEXT
 from skynet.application.logging import salogger
 from skynet.application.utils.buffer import Buffer
+from skynet.application.utils.monitored_condition import MonitoredCondition
 
 T = TypeVar("T")
+NOTHING = object()
 
 
 class ISerializable(ABC):
@@ -170,10 +172,16 @@ class SkynetServicePub(SkynetService, Generic[T]):
 class SkynetServiceSub(SkynetService, Generic[T]):
 
     def __init__(self, name: str, data: DataType, callback: Optional[Callable[[T], None]] = None,
-                 message_callback: bool = False, **kwargs):
+                 message_callback: bool = False, changes_only: bool = False, **kwargs):
         super(SkynetServiceSub, self).__init__(name, ServiceType.SUB, data, **kwargs)
         self._callback: Optional[Callable[[T], None]] = callback
         self._message_callback: bool = message_callback
+        self._changes_only: bool = changes_only
+        self._last: Union[Message, object] = NOTHING
+        self._last_raw: bytes = b""
+        # events
+        self._event_new_message = MonitoredCondition()
+        # mailman
         self._worker.start()
 
     @property
@@ -190,6 +198,13 @@ class SkynetServiceSub(SkynetService, Generic[T]):
     @property
     def value(self) -> T:
         return self.message.data
+
+    @property
+    def last(self) -> Message:
+        if self._last is NOTHING:
+            with self._event_new_message:
+                self._event_new_message.wait()
+        return self._last
 
     def register_callback(self, callback: Callable[[T], None],
                           message_callback: Optional[bool] = None):
@@ -215,13 +230,25 @@ class SkynetServiceSub(SkynetService, Generic[T]):
             msg = Message.deserialize(raw)
             if msg is None:
                 continue
+            # store as "last"
+            self._last = msg
             # callback
             if self._callback is not None:
-                self._callback(msg if self._message_callback else msg.data)
+                propagate: bool = True
+                # changes only
+                if self._changes_only:
+                    if len(raw) == len(self._last_raw) and raw == self._last_raw:
+                        propagate = False
+                    self._last_raw = raw
+                if propagate:
+                    self._callback(msg if self._message_callback else msg.data)
             # buffer mode
             else:
                 # TODO: this is where we check whether we are dropping messages
                 self._buffer.push(msg)
+            # trigger event
+            with self._event_new_message:
+                self._event_new_message.notify_all()
 
 
 class SkynetInteraction:
