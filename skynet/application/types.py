@@ -16,6 +16,7 @@ from skynet.application.utils.monitored_condition import MonitoredCondition
 
 T = TypeVar("T")
 NOTHING = object()
+EMPTY_REQUEST = (b"", b"")
 
 
 class ISerializable(ABC):
@@ -31,25 +32,83 @@ class ISerializable(ABC):
 
 
 @dataclasses.dataclass
-class Message:
+class Header:
     timestamp: float
-    data: Any
-    length: Optional[int] = None
     version: str = "1.0"
 
     def serialize(self) -> bytes:
         return cbor2.dumps(dataclasses.asdict(self))
 
     @classmethod
-    def deserialize(cls, raw: bytes) -> Optional['Message']:
+    def deserialize(cls, raw: bytes) -> Optional['Header']:
         try:
             # noinspection PyArgumentList
             msg = cls(**cbor2.loads(raw))
-            msg.length = len(raw)
             return msg
+        except (TypeError, ValueError) as e:
+            salogger.warning(f"Received error '{str(e)}' while decoding a message header")
+            return None
+
+
+class Message:
+
+    def __init__(self, timestamp: float, data: Any):
+        self._header: Header = Header(timestamp=timestamp)
+        self._data: Any = data
+        self._length: Optional[int] = None
+        self._version: str = "1.0"
+
+    @property
+    def data(self) -> Any:
+        return self._data
+
+    @property
+    def timestamp(self) -> float:
+        return self._header.timestamp
+
+    @timestamp.setter
+    def timestamp(self, value: float):
+        self._header.timestamp = value
+
+    @property
+    def header(self) -> Header:
+        return self._header
+
+    @header.setter
+    def header(self, value: Header):
+        self._header = value
+
+    def as_dict(self) -> dict:
+        return {
+            "data": self._data,
+            "version": self._version,
+        }
+
+    def serialize(self) -> Tuple[bytes, bytes]:
+        return self._header.serialize(), cbor2.dumps(self.as_dict())
+
+    @classmethod
+    def deserialize(cls, header: bytes, payload: bytes) -> Optional['Message']:
+        # decode header
+        header = Header.deserialize(header)
+        if header is None:
+            return None
+        # decode message
+        try:
+            # noinspection PyArgumentList
+            d = cbor2.loads(payload)
+
+            # TODO: support multiple versions
+            assert d.pop("version", None) == "1.0"
+
+            msg = cls(**d, timestamp=header.timestamp)
+            msg.length = len(payload)
+            msg.header = header
         except (TypeError, ValueError) as e:
             salogger.warning(f"Received error '{str(e)}' while decoding a message")
             return None
+        # ---
+        return msg
 
 
 class ServiceType(Enum):
@@ -164,9 +223,9 @@ class SkynetServicePub(SkynetService, Generic[T]):
         while True:
             # REQ(msg)  ->  SWITCHBOARD  ->  REP("")
             data = self._buffer.pop()
-            raw = (data if isinstance(data, Message) else Message(time.time(), data)).serialize()
-            self._socket.send(raw, copy=False)
-            self._socket.recv(copy=False)
+            header, raw = (data if isinstance(data, Message) else Message(time.time(), data)).serialize()
+            self._socket.send_multipart((header, raw), copy=False)
+            self._socket.recv_multipart(copy=False)
 
 
 class SkynetServiceSub(SkynetService, Generic[T]):
@@ -225,9 +284,9 @@ class SkynetServiceSub(SkynetService, Generic[T]):
     def _work(self):
         while True:
             # REQ("")  ->  SWITCHBOARD  ->  REP(msg)
-            self._socket.send(b"", copy=False)
-            raw = self._socket.recv(copy=False)
-            msg = Message.deserialize(raw)
+            self._socket.send_multipart(EMPTY_REQUEST, copy=False)
+            header, payload = self._socket.recv_multipart(copy=False)
+            msg = Message.deserialize(header, payload)
             if msg is None:
                 continue
             # store as "last"
@@ -237,9 +296,9 @@ class SkynetServiceSub(SkynetService, Generic[T]):
                 propagate: bool = True
                 # changes only
                 if self._changes_only:
-                    if len(raw) == len(self._last_raw) and raw == self._last_raw:
+                    if len(payload) == len(self._last_raw) and payload == self._last_raw:
                         propagate = False
-                    self._last_raw = raw
+                    self._last_raw = payload
                 if propagate:
                     self._callback(msg if self._message_callback else msg.data)
             # buffer mode
