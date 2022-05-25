@@ -37,7 +37,7 @@ class SimpleServicesSynchronizer:
                 # - callback mode
                 if self._callback is not None:
                     msgs = tuple((m if self._message_callback else m.data) for m in self._partial)
-                    self._callback(msgs)
+                    self._callback(*msgs)
                 # - buffer mode
                 else:
                     msgs = tuple(self._partial)
